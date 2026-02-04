@@ -8,6 +8,11 @@ namespace Files.App.Services.Thumbnails
 {
 	public sealed class ThumbnailService : IThumbnailService
 	{
+		private static readonly HashSet<string> _perFileIconExtensions = new(StringComparer.OrdinalIgnoreCase)
+		{
+			".exe", ".lnk", ".ico", ".url", ".scr"
+		};
+
 		private readonly IThumbnailCache _cache;
 		private readonly Dictionary<string, IThumbnailGenerator> _customGenerators;
 		private readonly IThumbnailGenerator _defaultGenerator;
@@ -41,7 +46,7 @@ namespace Files.App.Services.Thumbnails
 				if (options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
 				{
 					var extension = Path.GetExtension(path);
-					if (!string.IsNullOrEmpty(extension))
+					if (!string.IsNullOrEmpty(extension) && !_perFileIconExtensions.Contains(extension))
 					{
 						var cachedIcon = _cache.GetIcon(extension, size);
 						if (cachedIcon is not null)
@@ -58,7 +63,7 @@ namespace Files.App.Services.Thumbnails
 					if (result is not null && options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
 					{
 						var ext = Path.GetExtension(path);
-						if (!string.IsNullOrEmpty(ext))
+						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
 							_cache.SetIcon(ext, size, result);
 					}
 
@@ -78,7 +83,7 @@ namespace Files.App.Services.Thumbnails
 					{
 						// Icons go to in-memory cache only, not disk
 						var ext = Path.GetExtension(path);
-						if (!string.IsNullOrEmpty(ext))
+						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
 							_cache.SetIcon(ext, size, thumbnail);
 					}
 					else
