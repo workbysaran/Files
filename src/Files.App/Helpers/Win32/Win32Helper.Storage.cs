@@ -706,14 +706,14 @@ namespace Files.App.Helpers
 				if (psCommand.Length + appendCommand.Length > 32766)
 				{
 					// The command is too long to run at once, so run the command once up to this point.
-					await RunPowershellCommandAsync(psCommand.Append("\"").ToString(), PowerShellExecutionOptions.Elevated | PowerShellExecutionOptions.Hidden);
+					await RunPowershellCommandAsync(psCommand.Append('"').ToString(), PowerShellExecutionOptions.Elevated | PowerShellExecutionOptions.Hidden);
 					psCommand.Clear().Append("-command \"");
 				}
 
 				psCommand.Append(appendCommand);
 			}
 
-			await RunPowershellCommandAsync(psCommand.Append("\"").ToString(), PowerShellExecutionOptions.Elevated | PowerShellExecutionOptions.Hidden);
+			await RunPowershellCommandAsync(psCommand.Append('"').ToString(), PowerShellExecutionOptions.Elevated | PowerShellExecutionOptions.Hidden);
 		}
 
 		private static Process CreatePowershellProcess(string command, PowerShellExecutionOptions options, string? workingDirectory = null)
@@ -765,14 +765,21 @@ namespace Files.App.Helpers
 			return Win32PInvoke.SetFileTime(hFile.DangerousGetHandle(), new(), new(), dateModified);
 		}
 
-		public static bool HasFileAttribute(string lpFileName, FileAttributes dwAttrs)
+		public static FileAttributes GetFileAttributes(string lpFileName)
 		{
 			if (Win32PInvoke.GetFileAttributesExFromApp(
 				lpFileName, Win32PInvoke.GET_FILEEX_INFO_LEVELS.GetFileExInfoStandard, out var lpFileInfo))
 			{
-				return (lpFileInfo.dwFileAttributes & dwAttrs) == dwAttrs;
+				return lpFileInfo.dwFileAttributes;
 			}
-			return false;
+			return FileAttributes.None;
+		}
+
+		public static bool HasFileAttribute(string lpFileName, FileAttributes dwAttrs)
+		{
+			Debug.Assert(dwAttrs != FileAttributes.None);
+
+			return GetFileAttributes(lpFileName).HasFlag(dwAttrs);
 		}
 
 		public static bool SetFileAttribute(string lpFileName, FileAttributes dwAttrs)
