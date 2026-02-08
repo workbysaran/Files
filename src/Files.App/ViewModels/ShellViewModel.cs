@@ -1060,38 +1060,59 @@ namespace Files.App.ViewModels
 			var loadNonCachedThumbnail = false;
 			var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
 			var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
+			var enableThumbnailCache = UserSettingsService.GeneralSettingsService.EnableThumbnailCache;
 
 			// TODO Remove this property when all the layouts can support different icon sizes
 			var useCurrentScale = folderSettings.LayoutMode == FolderLayoutModes.DetailsView || folderSettings.LayoutMode == FolderLayoutModes.ListView || folderSettings.LayoutMode == FolderLayoutModes.ColumnView || folderSettings.LayoutMode == FolderLayoutModes.CardsView;
+			var scaleFlag = useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None;
 
 			byte[]? result = null;
 
 			// Non-cached thumbnails take longer to generate
 			if (item.IsFolder || !FileExtensionHelpers.IsExecutableFile(item.FileExtension))
 			{
-				if (!returnIconOnly)
+				if (returnIconOnly)
+				{
+					result = await FileThumbnailHelper.GetIconAsync(
+							item.ItemPath,
+							thumbnailSize,
+							item.IsFolder,
+							IconOptions.ReturnIconOnly | scaleFlag);
+
+					cancellationToken.ThrowIfCancellationRequested();
+				}
+				else if (!enableThumbnailCache)
+				{
+					result = await FileThumbnailHelper.GetIconAsync(
+							item.ItemPath,
+							thumbnailSize,
+							item.IsFolder,
+							scaleFlag);
+
+					cancellationToken.ThrowIfCancellationRequested();
+				}
+				else
 				{
 					// Check own cache first without hitting Shell API
 					result = await FileThumbnailHelper.GetCachedIconAsync(
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
-							IconOptions.ReturnThumbnailOnly | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
+							IconOptions.ReturnThumbnailOnly | scaleFlag);
 
 					cancellationToken.ThrowIfCancellationRequested();
 					loadNonCachedThumbnail = result is null;
-				}
 
-				if (result is null)
-				{
-					// Get icon
-					result = await FileThumbnailHelper.GetIconAsync(
-							item.ItemPath,
-							thumbnailSize,
-							item.IsFolder,
-							IconOptions.ReturnIconOnly | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
+					if (result is null)
+					{
+						result = await FileThumbnailHelper.GetIconAsync(
+								item.ItemPath,
+								thumbnailSize,
+								item.IsFolder,
+								IconOptions.ReturnIconOnly | scaleFlag);
 
-					cancellationToken.ThrowIfCancellationRequested();
+						cancellationToken.ThrowIfCancellationRequested();
+					}
 				}
 			}
 			else
@@ -1101,7 +1122,7 @@ namespace Files.App.ViewModels
 						item.ItemPath,
 						thumbnailSize,
 						item.IsFolder,
-						(returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None) | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
+						(returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None) | scaleFlag);
 
 				cancellationToken.ThrowIfCancellationRequested();
 			}
@@ -1147,7 +1168,7 @@ namespace Files.App.ViewModels
 								item.ItemPath,
 								thumbnailSize,
 								item.IsFolder,
-								IconOptions.ReturnThumbnailOnly | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
+								IconOptions.ReturnThumbnailOnly | scaleFlag);
 					}
 					finally
 					{
