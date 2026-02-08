@@ -87,9 +87,7 @@ namespace Files.App.Services.Thumbnails
 				var cacheKey = GenerateCacheKey(path, size, options, metadata);
 				var cachePath = Path.Combine(_cacheDirectory, $"{cacheKey}{CacheFileExtension}");
 
-				await File.WriteAllBytesAsync(cachePath, thumbnail, ct);
-
-				_memoryIndex[cacheKey] = new CacheEntry
+				var entry = new CacheEntry
 				{
 					Path = path,
 					Size = size,
@@ -98,6 +96,11 @@ namespace Files.App.Services.Thumbnails
 					FileModified = metadata.Modified,
 					FileSize = metadata.Size
 				};
+
+				if (!_memoryIndex.TryAdd(cacheKey, entry))
+					return;
+
+				await File.WriteAllBytesAsync(cachePath, thumbnail, ct);
 
 				_logger.LogDebug("Cached thumbnail for {Path} ({Bytes} bytes)", path, thumbnail.Length);
 
