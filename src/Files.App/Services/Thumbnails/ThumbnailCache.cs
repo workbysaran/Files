@@ -9,9 +9,9 @@ using Windows.Storage;
 
 namespace Files.App.Services.Thumbnails
 {
-	public sealed class ThumbnailCache : IThumbnailCache, IDisposable
+	public sealed class ThumbnailCache : IThumbnailCache
 	{
-		private readonly SqliteConnection _connection;
+		private readonly string _connectionString;
 		private readonly ConcurrentDictionary<string, byte[]> _iconCache;
 		private readonly ILogger _logger;
 		private readonly IUserSettingsService _userSettingsService;
@@ -34,18 +34,29 @@ namespace Files.App.Services.Thumbnails
 			Directory.CreateDirectory(cacheDirectory);
 
 			var dbPath = Path.Combine(cacheDirectory, "thumbnails.db");
-
-			_connection = new SqliteConnection($"Data Source={dbPath}");
-			_connection.Open();
+			_connectionString = $"Data Source={dbPath}";
 
 			InitializeDatabase();
 
 			_logger.LogInformation("Thumbnail cache database initialized at {Path}", dbPath);
 		}
 
+		private SqliteConnection CreateConnection()
+		{
+			var connection = new SqliteConnection(_connectionString);
+			connection.Open();
+
+			using var cmd = connection.CreateCommand();
+			cmd.CommandText = "PRAGMA synchronous=NORMAL";
+			cmd.ExecuteNonQuery();
+
+			return connection;
+		}
+
 		private void InitializeDatabase()
 		{
-			using var cmd = _connection.CreateCommand();
+			using var connection = CreateConnection();
+			using var cmd = connection.CreateCommand();
 			cmd.CommandText = """
 				CREATE TABLE IF NOT EXISTS thumbnails (
 					path TEXT NOT NULL,
@@ -59,7 +70,6 @@ namespace Files.App.Services.Thumbnails
 					PRIMARY KEY (path, size, icon_type)
 				);
 				PRAGMA journal_mode=WAL;
-				PRAGMA synchronous=NORMAL;
 				""";
 			cmd.ExecuteNonQuery();
 		}
@@ -71,7 +81,8 @@ namespace Files.App.Services.Thumbnails
 				var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
 				var metadata = GetFileMetadata(path);
 
-				using var cmd = _connection.CreateCommand();
+				using var connection = CreateConnection();
+				using var cmd = connection.CreateCommand();
 				cmd.CommandText = """
 					SELECT data FROM thumbnails
 					WHERE path = $path AND size = $size AND icon_type = $iconType
@@ -87,7 +98,7 @@ namespace Files.App.Services.Thumbnails
 				var result = cmd.ExecuteScalar();
 				if (result is byte[] data)
 				{
-					using var updateCmd = _connection.CreateCommand();
+					using var updateCmd = connection.CreateCommand();
 					updateCmd.CommandText = "UPDATE thumbnails SET last_accessed = $now WHERE path = $path AND size = $size AND icon_type = $iconType";
 					updateCmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
 					updateCmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
@@ -114,7 +125,8 @@ namespace Files.App.Services.Thumbnails
 				var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
 				var metadata = GetFileMetadata(path);
 
-				using var cmd = _connection.CreateCommand();
+				using var connection = CreateConnection();
+				using var cmd = connection.CreateCommand();
 				cmd.CommandText = """
 					INSERT OR IGNORE INTO thumbnails (path, size, icon_type, file_modified, file_size, cloud_status, data, last_accessed)
 					VALUES ($path, $size, $iconType, $modified, $fileSize, $cloud, $data, $now)
@@ -143,10 +155,8 @@ namespace Files.App.Services.Thumbnails
 		{
 			try
 			{
-				using var cmd = _connection.CreateCommand();
-				cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM thumbnails";
-				var result = cmd.ExecuteScalar();
-				return Task.FromResult(result is long val ? val : 0L);
+				using var connection = CreateConnection();
+				return Task.FromResult(GetSizeSync(connection));
 			}
 			catch
 			{
@@ -158,7 +168,8 @@ namespace Files.App.Services.Thumbnails
 		{
 			try
 			{
-				EvictToSizeCore(targetSizeBytes);
+				using var connection = CreateConnection();
+				EvictToSizeCore(targetSizeBytes, connection);
 			}
 			catch (Exception ex)
 			{
@@ -172,7 +183,8 @@ namespace Files.App.Services.Thumbnails
 		{
 			try
 			{
-				var currentSize = GetSizeSync();
+				using var connection = CreateConnection();
+				var currentSize = GetSizeSync(connection);
 				var maxCacheSizeBytes = GetMaxCacheSizeBytes();
 
 				if (currentSize > maxCacheSizeBytes)
@@ -180,7 +192,7 @@ namespace Files.App.Services.Thumbnails
 					_logger.LogInformation("Cache size {Current} MiB exceeds limit {Max} MiB, evicting...",
 						currentSize / 1024 / 1024, maxCacheSizeBytes / 1024 / 1024);
 
-					EvictToSizeCore(maxCacheSizeBytes * 3 / 4);
+					EvictToSizeCore(maxCacheSizeBytes * 3 / 4, connection);
 				}
 			}
 			catch (Exception ex)
@@ -189,44 +201,41 @@ namespace Files.App.Services.Thumbnails
 			}
 		}
 
-		private void EvictToSizeCore(long targetSizeBytes)
+		private void EvictToSizeCore(long targetSizeBytes, SqliteConnection connection)
 		{
-			var currentSize = GetSizeSync();
+			var currentSize = GetSizeSync(connection);
 			if (currentSize <= targetSizeBytes)
 				return;
 
 			var bytesToRemove = currentSize - targetSizeBytes;
 
-			using var cmd = _connection.CreateCommand();
+			using var cmd = connection.CreateCommand();
 			cmd.CommandText = """
 				DELETE FROM thumbnails WHERE rowid IN (
 					SELECT rowid FROM thumbnails ORDER BY last_accessed ASC LIMIT $limit
 				)
 				""";
 
-			var estimatedRowSize = currentSize / Math.Max(GetRowCount(), 1);
+			var estimatedRowSize = currentSize / Math.Max(GetRowCount(connection), 1);
 			var rowsToDelete = (int)Math.Max(bytesToRemove / Math.Max(estimatedRowSize, 1), 1);
 			cmd.Parameters.AddWithValue("$limit", rowsToDelete);
 
 			var removed = cmd.ExecuteNonQuery();
 
-			// No VACUUM here — freed pages get reused by future inserts.
-			// VACUUM copies the entire DB which is too expensive for partial eviction.
-
 			_logger.LogInformation("Evicted {Count} cache entries", removed);
 		}
 
-		private long GetSizeSync()
+		private long GetSizeSync(SqliteConnection connection)
 		{
-			using var cmd = _connection.CreateCommand();
+			using var cmd = connection.CreateCommand();
 			cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM thumbnails";
 			var result = cmd.ExecuteScalar();
 			return result is long val ? val : 0L;
 		}
 
-		private long GetRowCount()
+		private long GetRowCount(SqliteConnection connection)
 		{
-			using var cmd = _connection.CreateCommand();
+			using var cmd = connection.CreateCommand();
 			cmd.CommandText = "SELECT COUNT(*) FROM thumbnails";
 			var result = cmd.ExecuteScalar();
 			return result is long val ? val : 0L;
@@ -295,15 +304,17 @@ namespace Files.App.Services.Thumbnails
 		{
 			try
 			{
-				using var cmd = _connection.CreateCommand();
+				using var connection = CreateConnection();
+
+				using var cmd = connection.CreateCommand();
 				cmd.CommandText = "DELETE FROM thumbnails";
 				cmd.ExecuteNonQuery();
 
-				using var vacuumCmd = _connection.CreateCommand();
+				using var vacuumCmd = connection.CreateCommand();
 				vacuumCmd.CommandText = "VACUUM";
 				vacuumCmd.ExecuteNonQuery();
 
-				using var walCmd = _connection.CreateCommand();
+				using var walCmd = connection.CreateCommand();
 				walCmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
 				walCmd.ExecuteNonQuery();
 
@@ -316,11 +327,6 @@ namespace Files.App.Services.Thumbnails
 			}
 
 			return Task.CompletedTask;
-		}
-
-		public void Dispose()
-		{
-			_connection?.Dispose();
 		}
 	}
 
