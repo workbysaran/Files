@@ -1087,7 +1087,7 @@ namespace Files.App.ViewModels
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
-							scaleFlag);
+							(item.IsFolder ? IconOptions.ReturnIconOnly : IconOptions.None) | scaleFlag);
 
 					cancellationToken.ThrowIfCancellationRequested();
 				}
