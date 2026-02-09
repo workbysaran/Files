@@ -1,28 +1,22 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
-using Files.App.Data.Contracts;
-using Files.App.Data.Enums;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.IO;
-using System.Security.Cryptography;
-using System.Text;
 using Windows.Storage;
 
 namespace Files.App.Services.Thumbnails
 {
-	public sealed class ThumbnailCache : IThumbnailCache
+	public sealed class ThumbnailCache : IThumbnailCache, IDisposable
 	{
-		private readonly string _cacheDirectory;
-		private readonly ConcurrentDictionary<string, CacheEntry> _memoryIndex;
+		private readonly SqliteConnection _connection;
 		private readonly ConcurrentDictionary<string, byte[]> _iconCache;
-		private readonly SemaphoreSlim _evictionLock;
 		private readonly ILogger _logger;
 		private readonly IUserSettingsService _userSettingsService;
 
 		private const long DefaultCacheSizeMiB = 512;
-		private const string CacheFileExtension = ".thumb";
 
 		private const System.IO.FileAttributes CloudPinned = (System.IO.FileAttributes)0x80000;
 		private const System.IO.FileAttributes CloudUnpinned = (System.IO.FileAttributes)0x100000;
@@ -31,112 +25,223 @@ namespace Files.App.Services.Thumbnails
 		{
 			_logger = logger;
 			_userSettingsService = userSettingsService;
-			_cacheDirectory = Path.Combine(
+			_iconCache = new ConcurrentDictionary<string, byte[]>();
+
+			var cacheDirectory = Path.Combine(
 				ApplicationData.Current.LocalFolder.Path,
 				"thumbnail_cache");
 
-			Directory.CreateDirectory(_cacheDirectory);
+			Directory.CreateDirectory(cacheDirectory);
 
-			_memoryIndex = new ConcurrentDictionary<string, CacheEntry>();
-			_iconCache = new ConcurrentDictionary<string, byte[]>();
-			_evictionLock = new SemaphoreSlim(1, 1);
+			var dbPath = Path.Combine(cacheDirectory, "thumbnails.db");
 
-			_ = LoadCacheIndexAsync();
+			_connection = new SqliteConnection($"Data Source={dbPath}");
+			_connection.Open();
+
+			InitializeDatabase();
+
+			_logger.LogInformation("Thumbnail cache database initialized at {Path}", dbPath);
 		}
 
-		public async Task<byte[]?> GetAsync(string path, int size, IconOptions options, CancellationToken ct)
+		private void InitializeDatabase()
+		{
+			using var cmd = _connection.CreateCommand();
+			cmd.CommandText = """
+				CREATE TABLE IF NOT EXISTS thumbnails (
+					path TEXT NOT NULL,
+					size INTEGER NOT NULL,
+					icon_type TEXT NOT NULL,
+					file_modified INTEGER NOT NULL,
+					file_size INTEGER NOT NULL,
+					cloud_status INTEGER NOT NULL DEFAULT 0,
+					data BLOB NOT NULL,
+					last_accessed INTEGER NOT NULL,
+					PRIMARY KEY (path, size, icon_type)
+				);
+				PRAGMA journal_mode=WAL;
+				PRAGMA synchronous=NORMAL;
+				""";
+			cmd.ExecuteNonQuery();
+		}
+
+		public Task<byte[]?> GetAsync(string path, int size, IconOptions options, CancellationToken ct)
 		{
 			try
 			{
-				if (!File.Exists(path) && !Directory.Exists(path))
-					return null;
-
+				var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
 				var metadata = GetFileMetadata(path);
-				var cacheKey = GenerateCacheKey(path, size, options, metadata);
 
-				if (_memoryIndex.TryGetValue(cacheKey, out var entry))
+				using var cmd = _connection.CreateCommand();
+				cmd.CommandText = """
+					SELECT data FROM thumbnails
+					WHERE path = $path AND size = $size AND icon_type = $iconType
+					AND file_modified = $modified AND file_size = $fileSize AND cloud_status = $cloud
+					""";
+				cmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
+				cmd.Parameters.AddWithValue("$size", size);
+				cmd.Parameters.AddWithValue("$iconType", iconType);
+				cmd.Parameters.AddWithValue("$modified", metadata.Modified.Ticks);
+				cmd.Parameters.AddWithValue("$fileSize", metadata.Size);
+				cmd.Parameters.AddWithValue("$cloud", (int)metadata.CloudStatus);
+
+				var result = cmd.ExecuteScalar();
+				if (result is byte[] data)
 				{
-					if (File.Exists(entry.CachePath))
-					{
-						File.SetLastAccessTime(entry.CachePath, DateTime.UtcNow);
-						return await File.ReadAllBytesAsync(entry.CachePath, ct);
-					}
-					else
-					{
-						_memoryIndex.TryRemove(cacheKey, out _);
-					}
+					using var updateCmd = _connection.CreateCommand();
+					updateCmd.CommandText = "UPDATE thumbnails SET last_accessed = $now WHERE path = $path AND size = $size AND icon_type = $iconType";
+					updateCmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+					updateCmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
+					updateCmd.Parameters.AddWithValue("$size", size);
+					updateCmd.Parameters.AddWithValue("$iconType", iconType);
+					updateCmd.ExecuteNonQuery();
+
+					return Task.FromResult<byte[]?>(data);
 				}
 
-				return null;
+				return Task.FromResult<byte[]?>(null);
 			}
 			catch (Exception ex)
 			{
 				_logger.LogWarning(ex, "Error reading cache for {Path}", path);
-				return null;
+				return Task.FromResult<byte[]?>(null);
 			}
 		}
 
-		public async Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct)
+		public Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct)
 		{
 			try
 			{
-				if (IsPathInCacheDirectory(path))
-					return;
-
+				var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
 				var metadata = GetFileMetadata(path);
-				var cacheKey = GenerateCacheKey(path, size, options, metadata);
-				var cachePath = Path.Combine(_cacheDirectory, $"{cacheKey}{CacheFileExtension}");
 
-				var entry = new CacheEntry
-				{
-					Path = path,
-					Size = size,
-					CachePath = cachePath,
-					CreatedAt = DateTime.UtcNow,
-					FileModified = metadata.Modified,
-					FileSize = metadata.Size
-				};
+				using var cmd = _connection.CreateCommand();
+				cmd.CommandText = """
+					INSERT OR IGNORE INTO thumbnails (path, size, icon_type, file_modified, file_size, cloud_status, data, last_accessed)
+					VALUES ($path, $size, $iconType, $modified, $fileSize, $cloud, $data, $now)
+					""";
+				cmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
+				cmd.Parameters.AddWithValue("$size", size);
+				cmd.Parameters.AddWithValue("$iconType", iconType);
+				cmd.Parameters.AddWithValue("$modified", metadata.Modified.Ticks);
+				cmd.Parameters.AddWithValue("$fileSize", metadata.Size);
+				cmd.Parameters.AddWithValue("$cloud", (int)metadata.CloudStatus);
+				cmd.Parameters.AddWithValue("$data", thumbnail);
+				cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+				cmd.ExecuteNonQuery();
 
-				if (!_memoryIndex.TryAdd(cacheKey, entry))
-					return;
-
-				await File.WriteAllBytesAsync(cachePath, thumbnail, ct);
-
-				_logger.LogDebug("Cached thumbnail for {Path} ({Bytes} bytes)", path, thumbnail.Length);
-
-				_ = TryEvictIfNeededAsync();
+				_ = Task.Run(() => TryEvictIfNeeded());
 			}
 			catch (Exception ex)
 			{
 				_logger.LogWarning(ex, "Error writing cache for {Path}", path);
 			}
+
+			return Task.CompletedTask;
 		}
 
-		private bool IsPathInCacheDirectory(string path)
+		public Task<long> GetSizeAsync()
 		{
 			try
 			{
-				var normalizedPath = Path.GetFullPath(path);
-				return normalizedPath.StartsWith(_cacheDirectory, StringComparison.OrdinalIgnoreCase);
+				using var cmd = _connection.CreateCommand();
+				cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM thumbnails";
+				var result = cmd.ExecuteScalar();
+				return Task.FromResult(result is long val ? val : 0L);
 			}
 			catch
 			{
-				return false;
+				return Task.FromResult(0L);
 			}
 		}
 
-		private string GenerateCacheKey(string path, int size, IconOptions options, FileMetadata metadata)
+		public Task EvictToSizeAsync(long targetSizeBytes)
 		{
-			var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
+			try
+			{
+				EvictToSizeCore(targetSizeBytes);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Error during eviction");
+			}
 
-			var input = metadata.CloudStatus != 0
-				? $"{path.ToLowerInvariant()}|{size}|{iconType}|{metadata.Modified.Ticks}|{metadata.Size}|{(int)metadata.CloudStatus}"
-				: $"{path.ToLowerInvariant()}|{size}|{iconType}|{metadata.Modified.Ticks}|{metadata.Size}";
-			var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-			return Convert.ToHexString(hash);
+			return Task.CompletedTask;
 		}
 
-		private FileMetadata GetFileMetadata(string path)
+		private void TryEvictIfNeeded()
+		{
+			try
+			{
+				var currentSize = GetSizeSync();
+				var maxCacheSizeBytes = GetMaxCacheSizeBytes();
+
+				if (currentSize > maxCacheSizeBytes)
+				{
+					_logger.LogInformation("Cache size {Current} MiB exceeds limit {Max} MiB, evicting...",
+						currentSize / 1024 / 1024, maxCacheSizeBytes / 1024 / 1024);
+
+					EvictToSizeCore(maxCacheSizeBytes * 3 / 4);
+				}
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Error during auto-eviction");
+			}
+		}
+
+		private void EvictToSizeCore(long targetSizeBytes)
+		{
+			var currentSize = GetSizeSync();
+			if (currentSize <= targetSizeBytes)
+				return;
+
+			var bytesToRemove = currentSize - targetSizeBytes;
+
+			using var cmd = _connection.CreateCommand();
+			cmd.CommandText = """
+				DELETE FROM thumbnails WHERE rowid IN (
+					SELECT rowid FROM thumbnails ORDER BY last_accessed ASC LIMIT $limit
+				)
+				""";
+
+			var estimatedRowSize = currentSize / Math.Max(GetRowCount(), 1);
+			var rowsToDelete = (int)Math.Max(bytesToRemove / Math.Max(estimatedRowSize, 1), 1);
+			cmd.Parameters.AddWithValue("$limit", rowsToDelete);
+
+			var removed = cmd.ExecuteNonQuery();
+
+			// No VACUUM here — freed pages get reused by future inserts.
+			// VACUUM copies the entire DB which is too expensive for partial eviction.
+
+			_logger.LogInformation("Evicted {Count} cache entries", removed);
+		}
+
+		private long GetSizeSync()
+		{
+			using var cmd = _connection.CreateCommand();
+			cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM thumbnails";
+			var result = cmd.ExecuteScalar();
+			return result is long val ? val : 0L;
+		}
+
+		private long GetRowCount()
+		{
+			using var cmd = _connection.CreateCommand();
+			cmd.CommandText = "SELECT COUNT(*) FROM thumbnails";
+			var result = cmd.ExecuteScalar();
+			return result is long val ? val : 0L;
+		}
+
+		private long GetMaxCacheSizeBytes()
+		{
+			var cacheSizeMiB = _userSettingsService.GeneralSettingsService.ThumbnailCacheSizeLimit;
+			if (cacheSizeMiB <= 0)
+				cacheSizeMiB = DefaultCacheSizeMiB;
+
+			return (long)(cacheSizeMiB * 1024 * 1024);
+		}
+
+		private static FileMetadata GetFileMetadata(string path)
 		{
 			try
 			{
@@ -174,147 +279,6 @@ namespace Files.App.Services.Thumbnails
 			}
 		}
 
-		private async Task LoadCacheIndexAsync()
-		{
-			try
-			{
-				var cacheDir = new DirectoryInfo(_cacheDirectory);
-				if (!cacheDir.Exists)
-					return;
-
-				var files = cacheDir.GetFiles($"*{CacheFileExtension}");
-				_logger.LogInformation("Loading cache index: {Count} entries", files.Length);
-
-				foreach (var file in files)
-				{
-					var cacheKey = Path.GetFileNameWithoutExtension(file.Name);
-					_memoryIndex.TryAdd(cacheKey, new CacheEntry
-					{
-						CachePath = file.FullName,
-						CreatedAt = file.CreationTimeUtc
-					});
-				}
-
-				_logger.LogInformation("Cache index loaded: {Count} entries", _memoryIndex.Count);
-			}
-			catch (Exception ex)
-			{
-				_logger.LogWarning(ex, "Error loading cache index");
-			}
-		}
-
-		private async Task TryEvictIfNeededAsync()
-		{
-			if (!_evictionLock.Wait(0))
-				return;
-
-			try
-			{
-				var currentSize = await GetSizeAsync();
-				var maxCacheSizeBytes = GetMaxCacheSizeBytes();
-
-				if (currentSize > maxCacheSizeBytes)
-				{
-					_logger.LogInformation("Cache size {Current} MiB exceeds limit {Max} MiB, evicting...",
-						currentSize / 1024 / 1024, maxCacheSizeBytes / 1024 / 1024);
-
-					await EvictToSizeCoreAsync(maxCacheSizeBytes * 3 / 4);
-				}
-			}
-			finally
-			{
-				_evictionLock.Release();
-			}
-		}
-
-		private long GetMaxCacheSizeBytes()
-		{
-			var cacheSizeMiB = _userSettingsService.GeneralSettingsService.ThumbnailCacheSizeLimit;
-			if (cacheSizeMiB <= 0)
-				cacheSizeMiB = DefaultCacheSizeMiB;
-
-			return (long)(cacheSizeMiB * 1024 * 1024);
-		}
-
-		public async Task<long> GetSizeAsync()
-		{
-			try
-			{
-				var cacheFiles = Directory.GetFiles(_cacheDirectory, $"*{CacheFileExtension}");
-
-				long totalSizeOnDisk = 0;
-				foreach (var file in cacheFiles)
-				{
-					var fileSizeOnDisk = Win32Helper.GetFileSizeOnDisk(file);
-					totalSizeOnDisk += fileSizeOnDisk ?? 0;
-				}
-
-				return totalSizeOnDisk;
-			}
-			catch
-			{
-				return 0;
-			}
-		}		
-		
-		public async Task EvictToSizeAsync(long targetSizeBytes)
-		{
-			await _evictionLock.WaitAsync();
-
-			try
-			{
-				await EvictToSizeCoreAsync(targetSizeBytes);
-			}
-			finally
-			{
-				_evictionLock.Release();
-			}
-		}
-
-
-		private async Task EvictToSizeCoreAsync(long targetSizeBytes)
-		{
-			var cacheDir = new DirectoryInfo(_cacheDirectory);
-			if (!cacheDir.Exists)
-				return;
-
-			var files = cacheDir.GetFiles($"*{CacheFileExtension}")
-				.OrderBy(f => f.LastAccessTime)
-				.ToList();
-
-			long currentSize = 0;
-			foreach (var file in files)
-			{
-				var fileSizeOnDisk = Win32Helper.GetFileSizeOnDisk(file.FullName);
-				currentSize += fileSizeOnDisk ?? 0;
-			}
-
-			int removedCount = 0;
-
-			foreach (var file in files)
-			{
-				if (currentSize <= targetSizeBytes)
-					break;
-
-				try
-				{
-					var cacheKey = Path.GetFileNameWithoutExtension(file.Name);
-					var fileSizeOnDisk = Win32Helper.GetFileSizeOnDisk(file.FullName);
-					currentSize -= fileSizeOnDisk ?? 0;
-					file.Delete();
-					_memoryIndex.TryRemove(cacheKey, out _);
-					removedCount++;
-				}
-				catch (Exception ex)
-				{
-					_logger.LogWarning(ex, "Error deleting cache file {Path}", file.FullName);
-				}
-			}
-
-			_logger.LogInformation("Evicted {Count} cache entries, new size: {Size} MiB",
-				removedCount, currentSize / 1024 / 1024);
-		}
-
 		public byte[]? GetIcon(string extension, int size)
 		{
 			var key = $"{extension.ToLowerInvariant()}|{size}";
@@ -327,29 +291,36 @@ namespace Files.App.Services.Thumbnails
 			_iconCache.TryAdd(key, iconData);
 		}
 
-		public async Task ClearAsync()
+		public Task ClearAsync()
 		{
-			await _evictionLock.WaitAsync();
-
 			try
 			{
-				var cacheDir = new DirectoryInfo(_cacheDirectory);
-				if (!cacheDir.Exists)
-					return;
+				using var cmd = _connection.CreateCommand();
+				cmd.CommandText = "DELETE FROM thumbnails";
+				cmd.ExecuteNonQuery();
 
-				foreach (var file in cacheDir.GetFiles($"*{CacheFileExtension}"))
-				{
-					file.Delete();
-				}
+				using var vacuumCmd = _connection.CreateCommand();
+				vacuumCmd.CommandText = "VACUUM";
+				vacuumCmd.ExecuteNonQuery();
 
-				_memoryIndex.Clear();
+				using var walCmd = _connection.CreateCommand();
+				walCmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+				walCmd.ExecuteNonQuery();
+
 				_iconCache.Clear();
 				_logger.LogInformation("Cache cleared");
 			}
-			finally
+			catch (Exception ex)
 			{
-				_evictionLock.Release();
+				_logger.LogWarning(ex, "Error clearing cache");
 			}
+
+			return Task.CompletedTask;
+		}
+
+		public void Dispose()
+		{
+			_connection?.Dispose();
 		}
 	}
 
@@ -358,15 +329,5 @@ namespace Files.App.Services.Thumbnails
 		public DateTime Modified { get; init; }
 		public long Size { get; init; }
 		public System.IO.FileAttributes CloudStatus { get; init; }
-	}
-
-	internal record CacheEntry
-	{
-		public string Path { get; init; } = string.Empty;
-		public int Size { get; init; }
-		public string CachePath { get; init; } = string.Empty;
-		public DateTime CreatedAt { get; init; }
-		public DateTime FileModified { get; init; }
-		public long FileSize { get; init; }
 	}
 }

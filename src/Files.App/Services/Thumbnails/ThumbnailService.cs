@@ -41,8 +41,6 @@ namespace Files.App.Services.Thumbnails
 		{
 			try
 			{
-				var fileName = Path.GetFileName(path);
-
 				if (options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
 				{
 					var extension = Path.GetExtension(path);
@@ -88,12 +86,19 @@ namespace Files.App.Services.Thumbnails
 
 				var thumbnail = await selectedGenerator.GenerateAsync(path, size, isFolder, options, ct);
 
-				if (thumbnail is not null && options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
+				if (thumbnail is not null)
 				{
-					// Icons go to in-memory cache only, not disk
-					var ext = Path.GetExtension(path);
-					if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
-						_cache.SetIcon(ext, size, thumbnail);
+					if (options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
+					{
+						// Icons go to in-memory cache only, not disk
+						var ext = Path.GetExtension(path);
+						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
+							_cache.SetIcon(ext, size, thumbnail);
+					}
+					else if (!options.HasFlag(IconOptions.ReturnIconOnly))
+					{
+						await _cache.SetAsync(path, size, options, thumbnail, ct);
+					}
 				}
 
 				return thumbnail;
