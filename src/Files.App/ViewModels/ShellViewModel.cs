@@ -1077,7 +1077,8 @@ namespace Files.App.ViewModels
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
-							IconOptions.ReturnIconOnly | scaleFlag);
+							IconOptions.ReturnIconOnly | scaleFlag,
+							cancellationToken);
 
 					cancellationToken.ThrowIfCancellationRequested();
 				}
@@ -1087,7 +1088,8 @@ namespace Files.App.ViewModels
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
-							IconOptions.None | scaleFlag);
+							IconOptions.None | scaleFlag,
+							cancellationToken);
 
 					cancellationToken.ThrowIfCancellationRequested();
 				}
@@ -1098,7 +1100,8 @@ namespace Files.App.ViewModels
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
-							IconOptions.ReturnThumbnailOnly | scaleFlag);
+							IconOptions.ReturnThumbnailOnly | scaleFlag,
+							cancellationToken);
 
 					cancellationToken.ThrowIfCancellationRequested();
 					loadNonCachedThumbnail = result is null;
@@ -1109,7 +1112,8 @@ namespace Files.App.ViewModels
 								item.ItemPath,
 								thumbnailSize,
 								item.IsFolder,
-								IconOptions.ReturnIconOnly | scaleFlag);
+								IconOptions.ReturnIconOnly | scaleFlag,
+								cancellationToken);
 
 						cancellationToken.ThrowIfCancellationRequested();
 					}
@@ -1122,7 +1126,8 @@ namespace Files.App.ViewModels
 						item.ItemPath,
 						thumbnailSize,
 						item.IsFolder,
-						(returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None) | scaleFlag);
+						(returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None) | scaleFlag,
+						cancellationToken);
 
 				cancellationToken.ThrowIfCancellationRequested();
 			}
@@ -1168,7 +1173,8 @@ namespace Files.App.ViewModels
 								item.ItemPath,
 								thumbnailSize,
 								item.IsFolder,
-								IconOptions.ReturnThumbnailOnly | scaleFlag);
+								IconOptions.ReturnThumbnailOnly | scaleFlag,
+								cancellationToken);
 					}
 					finally
 					{

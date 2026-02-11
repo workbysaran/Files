@@ -13,7 +13,7 @@ namespace Files.App.Utils.Storage
 		/// <summary>
 		/// Returns icon or thumbnail for given file or folder
 		/// </summary>
-		public static async Task<byte[]?> GetIconAsync(string path, uint requestedSize, bool isFolder, IconOptions iconOptions)
+		public static async Task<byte[]?> GetIconAsync(string path, uint requestedSize, bool isFolder, IconOptions iconOptions, CancellationToken ct = default)
 		{
 			var size = iconOptions.HasFlag(IconOptions.UseCurrentScale) ? requestedSize * App.AppModel.AppWindowDPI : requestedSize;
 			// Ensure size is at least 1 to prevent layout errors
@@ -23,14 +23,15 @@ namespace Files.App.Utils.Storage
 				path,
 				(int)size,
 				isFolder,
-				iconOptions);
+				iconOptions,
+				ct);
 		}
 
 		/// <summary>
 		/// Returns cached thumbnail without calling the Shell API.
 		/// Returns null if not found in the cache.
 		/// </summary>
-		public static async Task<byte[]?> GetCachedIconAsync(string path, uint requestedSize, bool isFolder, IconOptions iconOptions)
+		public static async Task<byte[]?> GetCachedIconAsync(string path, uint requestedSize, bool isFolder, IconOptions iconOptions, CancellationToken ct = default)
 		{
 			var size = iconOptions.HasFlag(IconOptions.UseCurrentScale) ? requestedSize * App.AppModel.AppWindowDPI : requestedSize;
 			size = Math.Max(1, size);
@@ -39,7 +40,8 @@ namespace Files.App.Utils.Storage
 				path,
 				(int)size,
 				isFolder,
-				iconOptions);
+				iconOptions,
+				ct);
 		}
 
 		/// <summary>

@@ -88,6 +88,7 @@ namespace Files.App.Services.Thumbnails
 					var probe = await selectedGenerator.GenerateAsync(path, size, isFolder, options | IconOptions.ReturnOnlyIfCached, ct);
 					if (probe is not null)
 					{
+						ct.ThrowIfCancellationRequested();
 						if (!skipDiskCache)
 							await _cache.SetAsync(path, size, options, probe, ct);
 						return probe;
@@ -98,6 +99,7 @@ namespace Files.App.Services.Thumbnails
 
 				if (thumbnail is not null)
 				{
+					ct.ThrowIfCancellationRequested();
 					if (options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
 					{
 						// Icons go to in-memory cache only, not disk
