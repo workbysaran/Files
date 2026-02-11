@@ -68,9 +68,18 @@ namespace Files.App.Services.Thumbnails
 					return result;
 				}
 
-				var cached = await _cache.GetAsync(path, size, options, ct);
-				if (cached is not null)
-					return cached;
+				/* Shell API returns S_OK with generic folder icons for cloud drive folders when
+				 * files are placeholders, making it indistinguishable from a real thumbnail.
+				 * Skip disk cache for these folders to avoid persisting stale generic results.
+				 */
+				var skipDiskCache = IsCloudFolder(path, isFolder);
+
+				if (!skipDiskCache)
+				{
+					var cached = await _cache.GetAsync(path, size, options, ct);
+					if (cached is not null)
+						return cached;
+				}
 
 				var selectedGenerator = SelectGenerator(path, isFolder);
 
@@ -79,7 +88,8 @@ namespace Files.App.Services.Thumbnails
 					var probe = await selectedGenerator.GenerateAsync(path, size, isFolder, options | IconOptions.ReturnOnlyIfCached, ct);
 					if (probe is not null)
 					{
-						await _cache.SetAsync(path, size, options, probe, ct);
+						if (!skipDiskCache)
+							await _cache.SetAsync(path, size, options, probe, ct);
 						return probe;
 					}
 				}
@@ -95,7 +105,7 @@ namespace Files.App.Services.Thumbnails
 						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
 							_cache.SetIcon(ext, size, thumbnail);
 					}
-					else if (!options.HasFlag(IconOptions.ReturnIconOnly))
+					else if (!options.HasFlag(IconOptions.ReturnIconOnly) && !skipDiskCache)
 					{
 						await _cache.SetAsync(path, size, options, thumbnail, ct);
 					}
@@ -120,6 +130,9 @@ namespace Files.App.Services.Thumbnails
 			try
 			{
 				if (!_userSettingsService.GeneralSettingsService.EnableThumbnailCache)
+					return null;
+
+				if (IsCloudFolder(path, isFolder))
 					return null;
 
 				return await _cache.GetAsync(path, size, options, ct);
@@ -155,6 +168,23 @@ namespace Files.App.Services.Thumbnails
 			}
 
 			return _defaultGenerator;
+		}
+
+		private static bool IsCloudFolder(string path, bool isFolder)
+		{
+			if (!isFolder)
+				return false;
+
+			try
+			{
+				// 0x180000 = 0x80000 | 0x100000 (CloudPinned | CloudUnpinned)
+				const FileAttributes CloudMask = (FileAttributes)0x180000;
+				return (File.GetAttributes(path) & CloudMask) != 0;
+			}
+			catch
+			{
+				return false;
+			}
 		}
 
 		public Task ClearCacheAsync() => _cache.ClearAsync();
