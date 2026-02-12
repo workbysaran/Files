@@ -65,6 +65,7 @@ namespace Files.App.Services.Thumbnails
 					file_modified INTEGER NOT NULL,
 					file_size INTEGER NOT NULL,
 					cloud_status INTEGER NOT NULL DEFAULT 0,
+					is_placeholder INTEGER NOT NULL DEFAULT 0,
 					data BLOB NOT NULL,
 					last_accessed INTEGER NOT NULL,
 					PRIMARY KEY (path, size, icon_type)
@@ -74,7 +75,7 @@ namespace Files.App.Services.Thumbnails
 			cmd.ExecuteNonQuery();
 		}
 
-		public Task<byte[]?> GetAsync(string path, int size, IconOptions options, CancellationToken ct)
+		public Task<CachedThumbnail?> GetAsync(string path, int size, IconOptions options, CancellationToken ct)
 		{
 			try
 			{
@@ -84,7 +85,7 @@ namespace Files.App.Services.Thumbnails
 				using var connection = CreateConnection();
 				using var cmd = connection.CreateCommand();
 				cmd.CommandText = """
-					SELECT data FROM thumbnails
+					SELECT data, is_placeholder FROM thumbnails
 					WHERE path = $path AND size = $size AND icon_type = $iconType
 					AND file_modified = $modified AND file_size = $fileSize AND cloud_status = $cloud
 					""";
@@ -95,8 +96,19 @@ namespace Files.App.Services.Thumbnails
 				cmd.Parameters.AddWithValue("$fileSize", metadata.Size);
 				cmd.Parameters.AddWithValue("$cloud", (int)metadata.CloudStatus);
 
-				var result = cmd.ExecuteScalar();
-				if (result is byte[] data)
+				byte[]? data = null;
+				var isPlaceholder = false;
+
+				using (var reader = cmd.ExecuteReader())
+				{
+					if (reader.Read())
+					{
+						data = (byte[])reader["data"];
+						isPlaceholder = (long)reader["is_placeholder"] != 0;
+					}
+				}
+
+				if (data is not null)
 				{
 					using var updateCmd = connection.CreateCommand();
 					updateCmd.CommandText = "UPDATE thumbnails SET last_accessed = $now WHERE path = $path AND size = $size AND icon_type = $iconType";
@@ -106,19 +118,19 @@ namespace Files.App.Services.Thumbnails
 					updateCmd.Parameters.AddWithValue("$iconType", iconType);
 					updateCmd.ExecuteNonQuery();
 
-					return Task.FromResult<byte[]?>(data);
+					return Task.FromResult<CachedThumbnail?>(new CachedThumbnail(data, isPlaceholder));
 				}
 
-				return Task.FromResult<byte[]?>(null);
+				return Task.FromResult<CachedThumbnail?>(null);
 			}
 			catch (Exception ex)
 			{
 				_logger.LogWarning(ex, "Error reading cache for {Path}", path);
-				return Task.FromResult<byte[]?>(null);
+				return Task.FromResult<CachedThumbnail?>(null);
 			}
 		}
 
-		public Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct)
+		public Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, bool isPlaceholder, CancellationToken ct)
 		{
 			try
 			{
@@ -128,8 +140,8 @@ namespace Files.App.Services.Thumbnails
 				using var connection = CreateConnection();
 				using var cmd = connection.CreateCommand();
 				cmd.CommandText = """
-					INSERT OR IGNORE INTO thumbnails (path, size, icon_type, file_modified, file_size, cloud_status, data, last_accessed)
-					VALUES ($path, $size, $iconType, $modified, $fileSize, $cloud, $data, $now)
+					INSERT OR IGNORE INTO thumbnails (path, size, icon_type, file_modified, file_size, cloud_status, is_placeholder, data, last_accessed)
+					VALUES ($path, $size, $iconType, $modified, $fileSize, $cloud, $isPlaceholder, $data, $now)
 					""";
 				cmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
 				cmd.Parameters.AddWithValue("$size", size);
@@ -137,6 +149,7 @@ namespace Files.App.Services.Thumbnails
 				cmd.Parameters.AddWithValue("$modified", metadata.Modified.Ticks);
 				cmd.Parameters.AddWithValue("$fileSize", metadata.Size);
 				cmd.Parameters.AddWithValue("$cloud", (int)metadata.CloudStatus);
+				cmd.Parameters.AddWithValue("$isPlaceholder", isPlaceholder ? 1 : 0);
 				cmd.Parameters.AddWithValue("$data", thumbnail);
 				cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
 				cmd.ExecuteNonQuery();
@@ -146,6 +159,34 @@ namespace Files.App.Services.Thumbnails
 			catch (Exception ex)
 			{
 				_logger.LogWarning(ex, "Error writing cache for {Path}", path);
+			}
+
+			return Task.CompletedTask;
+		}
+
+		public Task UpdateAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct)
+		{
+			try
+			{
+				var iconType = options.HasFlag(IconOptions.ReturnIconOnly) ? "icon" : "thumb";
+
+				using var connection = CreateConnection();
+				using var cmd = connection.CreateCommand();
+				cmd.CommandText = """
+					UPDATE thumbnails
+					SET data = $data, is_placeholder = 0, last_accessed = $now
+					WHERE path = $path AND size = $size AND icon_type = $iconType
+					""";
+				cmd.Parameters.AddWithValue("$data", thumbnail);
+				cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+				cmd.Parameters.AddWithValue("$path", path.ToLowerInvariant());
+				cmd.Parameters.AddWithValue("$size", size);
+				cmd.Parameters.AddWithValue("$iconType", iconType);
+				cmd.ExecuteNonQuery();
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Error updating cache for {Path}", path);
 			}
 
 			return Task.CompletedTask;

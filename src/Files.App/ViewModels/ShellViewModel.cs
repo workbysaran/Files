@@ -1096,7 +1096,7 @@ namespace Files.App.ViewModels
 				else
 				{
 					// Check own cache first without hitting Shell API
-					result = await FileThumbnailHelper.GetCachedIconAsync(
+					result = await FileThumbnailHelper.GetIconAsync(
 							item.ItemPath,
 							thumbnailSize,
 							item.IsFolder,
@@ -1399,7 +1399,7 @@ namespace Files.App.ViewModels
 						{
 							_ = Task.Run(async () =>
 							{
-								await Task.Delay(500);
+								await Task.Delay(15000);
 								cts.Token.ThrowIfCancellationRequested();
 								await LoadThumbnailAsync(item, cts.Token);
 							});

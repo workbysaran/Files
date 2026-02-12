@@ -3,6 +3,9 @@
 
 namespace Files.App.Data.Contracts
 {
+	public record CachedThumbnail(byte[] Data, bool IsPlaceholder);
+
+
 	/// <summary>
 	/// Stores and retrieves cached thumbnails.
 	/// </summary>
@@ -12,12 +15,14 @@ namespace Files.App.Data.Contracts
 		/// Retrieves a cached thumbnail.
 		/// </summary>
 		/// <returns>Thumbnail bytes, or null if not cached.</returns>
-		Task<byte[]?> GetAsync(string path, int size, IconOptions options, CancellationToken ct);
+		Task<CachedThumbnail?> GetAsync(string path, int size, IconOptions options, CancellationToken ct);
+
+		Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, bool isPlaceholder, CancellationToken ct);
 
 		/// <summary>
 		/// Stores a thumbnail in the cache.
 		/// </summary>
-		Task SetAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct);
+		Task UpdateAsync(string path, int size, IconOptions options, byte[] thumbnail, CancellationToken ct);
 
 		/// <summary>
 		/// Gets the current cache size in bytes.
