@@ -69,10 +69,8 @@ namespace Files.App.Services.Thumbnails
 				}
 
 				var cached = await _cache.GetAsync(path, size, options, ct);
-				if (cached is not null && !cached.IsPlaceholder)
+				if (cached is not null)
 					return cached.Data;
-
-				var isPlaceholder = false;
 
 				if (!options.HasFlag(IconOptions.ReturnIconOnly))
 				{
@@ -80,15 +78,9 @@ namespace Files.App.Services.Thumbnails
 					if (probe is not null)
 					{
 						ct.ThrowIfCancellationRequested();
-						App.Logger.LogInformation($"Probed thumbnail for {path} is available, caching it. isFolder: {isFolder}, options: {options}");
-						if (cached is not null)
-							await _cache.UpdateAsync(path, size, options, probe, ct);
-						else
-							await _cache.SetAsync(path, size, options, probe, false, ct);
+						await _cache.SetAsync(path, size, options, probe, ct);
 						return probe;
 					}
-					else
-						isPlaceholder = isFolder;
 				}
 
 				var thumbnail = await _defaultGenerator.GenerateAsync(path, size, isFolder, options, ct);
@@ -103,13 +95,8 @@ namespace Files.App.Services.Thumbnails
 						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
 							_cache.SetIcon(ext, size, thumbnail);
 					}
-					else if (!options.HasFlag(IconOptions.ReturnIconOnly))
-					{
-						if (cached is not null)
-							await _cache.UpdateAsync(path, size, options, thumbnail, ct);
-						else
-							await _cache.SetAsync(path, size, options, thumbnail, isPlaceholder, ct);
-					}
+					else if (!options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
+						await _cache.SetAsync(path, size, options, thumbnail, ct);
 				}
 
 				return thumbnail;
