@@ -1067,6 +1067,7 @@ namespace Files.App.ViewModels
 			var scaleFlag = useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None;
 
 			byte[]? result = null;
+			var sw = Stopwatch.StartNew();
 
 			// Non-cached thumbnails take longer to generate
 			if (item.IsFolder || !FileExtensionHelpers.IsExecutableFile(item.FileExtension))
@@ -1132,6 +1133,9 @@ namespace Files.App.ViewModels
 				cancellationToken.ThrowIfCancellationRequested();
 			}
 
+			sw.Stop();
+			App.Logger.LogDebug("Thumbnail loaded for {Path} in {ElapsedMs}ms (initial)", item.ItemPath, sw.ElapsedMilliseconds);
+
 			if (result is not null)
 			{
 				await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
@@ -1167,6 +1171,7 @@ namespace Files.App.ViewModels
 				_ = Task.Run(async () =>
 				{
 					await loadThumbnailSemaphore.WaitAsync(cancellationToken);
+					var swDeferred = Stopwatch.StartNew();
 					try
 					{
 						result = await FileThumbnailHelper.GetIconAsync(
@@ -1180,6 +1185,8 @@ namespace Files.App.ViewModels
 					{
 						loadThumbnailSemaphore.Release();
 					}
+					swDeferred.Stop();
+					App.Logger.LogDebug("Thumbnail loaded for {Path} in {ElapsedMs}ms (deferred)", item.ItemPath, swDeferred.ElapsedMilliseconds);
 
 					cancellationToken.ThrowIfCancellationRequested();
 
