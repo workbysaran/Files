@@ -1406,7 +1406,7 @@ namespace Files.App.ViewModels
 						{
 							_ = Task.Run(async () =>
 							{
-								await Task.Delay(500);
+								await Task.Delay(1000);
 								cts.Token.ThrowIfCancellationRequested();
 								await LoadThumbnailAsync(item, cts.Token);
 							});
