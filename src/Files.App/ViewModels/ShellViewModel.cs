@@ -34,7 +34,7 @@ namespace Files.App.ViewModels
 		private readonly SemaphoreSlim enumFolderSemaphore;
 		private readonly SemaphoreSlim getFileOrFolderSemaphore;
 		private readonly SemaphoreSlim bulkOperationSemaphore;
-
+		private readonly SemaphoreSlim loadThumbnailSemaphore;
 		private readonly ConcurrentQueue<(uint Action, string FileName)> operationQueue;
 		private readonly ConcurrentQueue<uint> gitChangesQueue;
 		private readonly ConcurrentDictionary<string, bool> itemLoadQueue;
@@ -569,6 +569,7 @@ namespace Files.App.ViewModels
 			enumFolderSemaphore = new SemaphoreSlim(1, 1);
 			getFileOrFolderSemaphore = new SemaphoreSlim(50);
 			bulkOperationSemaphore = new SemaphoreSlim(1, 1);
+			loadThumbnailSemaphore = new SemaphoreSlim(1, 1);
 			dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
 			UserSettingsService.OnSettingChangedEvent += UserSettingsService_OnSettingChangedEvent;
@@ -1056,6 +1057,7 @@ namespace Files.App.ViewModels
 
 		private async Task LoadThumbnailAsync(ListedItem item, CancellationToken cancellationToken)
 		{
+			var loadNonCachedThumbnail = false;
 			var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
 			var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
 			var enableThumbnailCache = UserSettingsService.GeneralSettingsService.EnableThumbnailCache;
@@ -1070,7 +1072,18 @@ namespace Files.App.ViewModels
 			// Non-cached thumbnails take longer to generate
 			if (item.IsFolder || !FileExtensionHelpers.IsExecutableFile(item.FileExtension))
 			{
-				if (returnIconOnly)
+				//Folders and non-executable files are more likely to have thumbnails, so try to get thumbnail first
+				result = await FileThumbnailHelper.GetIconAsync(
+						item.ItemPath,
+						thumbnailSize,
+						item.IsFolder,
+						IconOptions.ReturnThumbnailOnly | scaleFlag,
+						cancellationToken);
+
+				loadNonCachedThumbnail = result is null;
+				cancellationToken.ThrowIfCancellationRequested();
+
+				if (result is null)
 				{
 					result = await FileThumbnailHelper.GetIconAsync(
 							item.ItemPath,
@@ -1080,40 +1093,6 @@ namespace Files.App.ViewModels
 							cancellationToken);
 
 					cancellationToken.ThrowIfCancellationRequested();
-				}
-				else if (!enableThumbnailCache)
-				{
-					result = await FileThumbnailHelper.GetIconAsync(
-							item.ItemPath,
-							thumbnailSize,
-							item.IsFolder,
-							IconOptions.None | scaleFlag,
-							cancellationToken);
-
-					cancellationToken.ThrowIfCancellationRequested();
-				}
-				else
-				{
-					result = await FileThumbnailHelper.GetIconAsync(
-							item.ItemPath,
-							thumbnailSize,
-							item.IsFolder,
-							IconOptions.ReturnThumbnailOnly | scaleFlag,
-							cancellationToken);
-
-					cancellationToken.ThrowIfCancellationRequested();
-
-					if (result is null)
-					{
-						result = await FileThumbnailHelper.GetIconAsync(
-								item.ItemPath,
-								thumbnailSize,
-								item.IsFolder,
-								IconOptions.ReturnIconOnly | scaleFlag,
-								cancellationToken);
-
-						cancellationToken.ThrowIfCancellationRequested();
-					}
 				}
 			}
 			else
@@ -1130,7 +1109,7 @@ namespace Files.App.ViewModels
 			}
 
 			sw.Stop();
-			App.Logger.LogDebug("Thumbnail loaded for {Path} in {ElapsedMs}ms (initial)", item.ItemPath, sw.ElapsedMilliseconds);
+			App.Logger.LogInformation("Thumbnail loaded for {Path} in {ElapsedMs}ms (initial)", item.ItemPath, sw.ElapsedMilliseconds);
 
 			if (result is not null)
 			{
@@ -1160,6 +1139,46 @@ namespace Files.App.ViewModels
 					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
 				}
 			});
+
+			if (loadNonCachedThumbnail)
+			{
+				// Get non-cached thumbnail asynchronously
+				_ = Task.Run(async () =>
+				{
+					await loadThumbnailSemaphore.WaitAsync(cancellationToken);
+					var swDeferred = Stopwatch.StartNew();
+					try
+					{
+						result = await FileThumbnailHelper.GetIconAsync(
+								item.ItemPath,
+								thumbnailSize,
+								item.IsFolder,
+								IconOptions.ReturnThumbnailOnly | scaleFlag,
+								cancellationToken);
+					}
+					finally
+					{
+						loadThumbnailSemaphore.Release();
+					}
+					swDeferred.Stop();
+					App.Logger.LogInformation("Thumbnail loaded for {Path} in {ElapsedMs}ms (deferred)", item.ItemPath, swDeferred.ElapsedMilliseconds);
+
+					cancellationToken.ThrowIfCancellationRequested();
+
+					if (result is not null)
+					{
+						App.Logger.LogInformation("Thumbnail updated for {Path} in UI", item.ItemPath);
+						var image = result.ToBitmap();
+						if (image is not null)
+						{
+							await dispatcherQueue.EnqueueOrInvokeAsync(() =>
+							{
+								item.FileImage = image;
+							}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+						}
+					}
+				}, cancellationToken);
+			}
 		}
 
 		private static void SetFileTag(ListedItem item)
