@@ -1138,32 +1138,32 @@ namespace Files.App.ViewModels
 
 			if (result is not null)
 			{
-				await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
+				var image = result.ToBitmap();
+				if (image is not null)
 				{
-					// Assign FileImage property
-					var image = await result.ToBitmapAsync();
-					if (image is not null)
+					await dispatcherQueue.EnqueueOrInvokeAsync(() =>
+					{
 						item.FileImage = image;
-				}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
-
+					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+				}
 				cancellationToken.ThrowIfCancellationRequested();
 			}
 
 			// Get icon overlay
-			var iconOverlay = await FileThumbnailHelper.GetIconOverlayAsync(item.ItemPath, true);
-
-			cancellationToken.ThrowIfCancellationRequested();
-
-			if (iconOverlay is not null)
+			_ = Task.Run(async () =>
 			{
-				await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
-				{
-					item.IconOverlay = await iconOverlay.ToBitmapAsync();
-					item.ShieldIcon = await GetShieldIcon();
-				}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
-
+				var iconOverlay = await FileThumbnailHelper.GetIconOverlayAsync(item.ItemPath, true);
 				cancellationToken.ThrowIfCancellationRequested();
-			}
+				if (iconOverlay is not null)
+				{
+					var overlayImage = iconOverlay.ToBitmap();
+					await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
+					{
+						item.IconOverlay = overlayImage;
+						item.ShieldIcon = await GetShieldIcon();
+					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+				}
+			});
 
 			if (loadNonCachedThumbnail)
 			{
@@ -1192,13 +1192,14 @@ namespace Files.App.ViewModels
 
 					if (result is not null)
 					{
-						await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
+						var image = result.ToBitmap();
+						if (image is not null)
 						{
-							// Assign FileImage property
-							var image = await result.ToBitmapAsync();
-							if (image is not null)
+							await dispatcherQueue.EnqueueOrInvokeAsync(() =>
+							{
 								item.FileImage = image;
-						}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+							}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+						}
 					}
 				}, cancellationToken);
 			}
