@@ -34,7 +34,7 @@ namespace Files.App.ViewModels
 		private readonly SemaphoreSlim enumFolderSemaphore;
 		private readonly SemaphoreSlim getFileOrFolderSemaphore;
 		private readonly SemaphoreSlim bulkOperationSemaphore;
-		private readonly SemaphoreSlim loadThumbnailSemaphore;
+
 		private readonly ConcurrentQueue<(uint Action, string FileName)> operationQueue;
 		private readonly ConcurrentQueue<uint> gitChangesQueue;
 		private readonly ConcurrentDictionary<string, bool> itemLoadQueue;
@@ -569,7 +569,6 @@ namespace Files.App.ViewModels
 			enumFolderSemaphore = new SemaphoreSlim(1, 1);
 			getFileOrFolderSemaphore = new SemaphoreSlim(50);
 			bulkOperationSemaphore = new SemaphoreSlim(1, 1);
-			loadThumbnailSemaphore = new SemaphoreSlim(1, 1);
 			dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
 			UserSettingsService.OnSettingChangedEvent += UserSettingsService_OnSettingChangedEvent;
@@ -1057,7 +1056,6 @@ namespace Files.App.ViewModels
 
 		private async Task LoadThumbnailAsync(ListedItem item, CancellationToken cancellationToken)
 		{
-			var loadNonCachedThumbnail = false;
 			var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
 			var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
 			var enableThumbnailCache = UserSettingsService.GeneralSettingsService.EnableThumbnailCache;
@@ -1096,7 +1094,6 @@ namespace Files.App.ViewModels
 				}
 				else
 				{
-					// Check own cache first without hitting Shell API
 					result = await FileThumbnailHelper.GetIconAsync(
 							item.ItemPath,
 							thumbnailSize,
@@ -1105,7 +1102,6 @@ namespace Files.App.ViewModels
 							cancellationToken);
 
 					cancellationToken.ThrowIfCancellationRequested();
-					loadNonCachedThumbnail = result is null;
 
 					if (result is null)
 					{
@@ -1164,45 +1160,6 @@ namespace Files.App.ViewModels
 					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
 				}
 			});
-
-			if (loadNonCachedThumbnail)
-			{
-				// Get non-cached thumbnail asynchronously
-				_ = Task.Run(async () =>
-				{
-					await loadThumbnailSemaphore.WaitAsync(cancellationToken);
-					var swDeferred = Stopwatch.StartNew();
-					try
-					{
-						result = await FileThumbnailHelper.GetIconAsync(
-								item.ItemPath,
-								thumbnailSize,
-								item.IsFolder,
-								IconOptions.ReturnThumbnailOnly | scaleFlag,
-								cancellationToken);
-					}
-					finally
-					{
-						loadThumbnailSemaphore.Release();
-					}
-					swDeferred.Stop();
-					App.Logger.LogDebug("Thumbnail loaded for {Path} in {ElapsedMs}ms (deferred)", item.ItemPath, swDeferred.ElapsedMilliseconds);
-
-					cancellationToken.ThrowIfCancellationRequested();
-
-					if (result is not null)
-					{
-						var image = result.ToBitmap();
-						if (image is not null)
-						{
-							await dispatcherQueue.EnqueueOrInvokeAsync(() =>
-							{
-								item.FileImage = image;
-							}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
-						}
-					}
-				}, cancellationToken);
-			}
 		}
 
 		private static void SetFileTag(ListedItem item)
