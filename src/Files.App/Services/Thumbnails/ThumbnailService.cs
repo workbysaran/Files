@@ -8,6 +8,7 @@ namespace Files.App.Services.Thumbnails
 {
 	public sealed class ThumbnailService : IThumbnailService
 	{
+		private readonly SemaphoreSlim loadThumbnailSemaphore;
 		public Task ClearCacheAsync() => _cache.ClearAsync();
 		public Task<long> GetCacheSizeAsync() => _cache.GetSizeAsync();
 		public Task EvictCacheAsync(long targetSizeBytes) => _cache.EvictToSizeAsync(targetSizeBytes);
@@ -32,6 +33,7 @@ namespace Files.App.Services.Thumbnails
 			_defaultGenerator = defaultGenerator;
 			_userSettingsService = userSettingsService;
 			_logger = logger;
+			loadThumbnailSemaphore = new SemaphoreSlim(1, 1);
 		}
 
 		public async Task<byte[]?> GetThumbnailAsync(
@@ -56,16 +58,17 @@ namespace Files.App.Services.Thumbnails
 
 				if (!_userSettingsService.GeneralSettingsService.EnableThumbnailCache)
 				{
-					var result = await _defaultGenerator.GenerateAsync(path, size, isFolder, options, ct);
+					var thumbnailNonCached = await GenerateWithOptionalSemaphoreAsync(path, size, isFolder, options, ct);
+					ct.ThrowIfCancellationRequested();
 
-					if (result is not null && options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
+					if (thumbnailNonCached is not null && options.HasFlag(IconOptions.ReturnIconOnly) && !isFolder)
 					{
 						var ext = Path.GetExtension(path);
 						if (!string.IsNullOrEmpty(ext) && !_perFileIconExtensions.Contains(ext))
-							_cache.SetIcon(ext, size, result);
+							_cache.SetIcon(ext, size, thumbnailNonCached);
 					}
 
-					return result;
+					return thumbnailNonCached;
 				}
 
 				var cached = await _cache.GetAsync(path, size, options, ct);
@@ -83,7 +86,8 @@ namespace Files.App.Services.Thumbnails
 					}
 				}
 
-				var thumbnail = await _defaultGenerator.GenerateAsync(path, size, isFolder, options, ct);
+				var thumbnail = await GenerateWithOptionalSemaphoreAsync(path, size, isFolder, options, ct);
+				ct.ThrowIfCancellationRequested();
 
 				if (thumbnail is not null)
 				{
@@ -105,6 +109,23 @@ namespace Files.App.Services.Thumbnails
 			{
 				_logger.LogError(ex, "Failed to get thumbnail for {Path}", path);
 				return null;
+			}
+		}
+
+		private async Task<byte[]?> GenerateWithOptionalSemaphoreAsync(
+			string path, int size, bool isFolder, IconOptions options, CancellationToken ct)
+		{
+			bool useSemaphore = options.HasFlag(IconOptions.ReturnThumbnailOnly);
+			if (useSemaphore)
+				await loadThumbnailSemaphore.WaitAsync(ct);
+			try
+			{
+				return await _defaultGenerator.GenerateAsync(path, size, isFolder, options, ct);
+			}
+			finally
+			{
+				if (useSemaphore)
+					loadThumbnailSemaphore.Release();
 			}
 		}
 
