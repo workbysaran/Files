@@ -30,6 +30,8 @@ namespace Files.App.Utils
 
 		public StorageItemTypes PrimaryItemAttribute { get; set; }
 
+		public byte[]? PreloadedIconData { get; set; }
+
 		private volatile int itemPropertiesInitialized = 0;
 		public bool ItemPropertiesInitialized
 		{

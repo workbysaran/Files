@@ -1057,6 +1057,8 @@ namespace Files.App.ViewModels
 
 		private async Task LoadThumbnailAsync(ListedItem item, CancellationToken cancellationToken)
 		{
+			item.PreloadedIconData = null;
+
 			var loadNonCachedThumbnail = false;
 			var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
 			var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
