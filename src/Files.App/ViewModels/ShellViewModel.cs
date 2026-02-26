@@ -169,6 +169,7 @@ namespace Files.App.ViewModels
 		private CancellationTokenSource watcherCTS;
 		private CancellationTokenSource searchCTS;
 		private CancellationTokenSource updateTagGroupCTS;
+		private CancellationTokenSource? filterDebounceCS;
 
 		public event EventHandler FocusFilterHeader;
 
@@ -789,7 +790,20 @@ namespace Files.App.ViewModels
 
 		private void FilesAndFolderFilterUpdated()
 		{
-			_ = ApplyFilesAndFoldersChangesAsync();
+			if (filterDebounceCS is not null)
+			{
+				filterDebounceCS.Cancel();
+				filterDebounceCS.Dispose();
+			}
+
+			filterDebounceCS = new CancellationTokenSource();
+			var token = filterDebounceCS.Token;
+
+			_ = Task.Delay(250, token)
+				.ContinueWith(_ => ApplyFilesAndFoldersChangesAsync(), token,
+					TaskContinuationOptions.OnlyOnRanToCompletion,
+					TaskScheduler.Default)
+				.Unwrap();
 		}
 
 
@@ -2796,6 +2810,8 @@ namespace Files.App.ViewModels
 		public void Dispose()
 		{
 			CancelLoadAndClearFiles();
+			filterDebounceCS?.Cancel();
+			filterDebounceCS?.Dispose();
 			App.Logger.LogInformation($"ShellViewModel.Dispose: CurrentFolder={LogPathHelper.GetPathIdentifier(CurrentFolder?.ItemPath)}");
 
 			StorageTrashBinService.Watcher.ItemAdded -= RecycleBinItemCreatedAsync;
