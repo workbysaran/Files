@@ -341,5 +341,8 @@ namespace Files.App.Helpers
 		// cryptui.dll
 		[DllImport("cryptui.dll", SetLastError = true, CharSet = CharSet.Auto)]
 		public unsafe static extern bool CryptUIDlgViewSignerInfo(CRYPTUI_VIEWSIGNERINFO_STRUCT* pViewInfo);
+
+		[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+		public static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 	}
 }
