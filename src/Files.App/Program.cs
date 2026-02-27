@@ -8,6 +8,7 @@ using Microsoft.Windows.AppLifecycle;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using Windows.Win32.UI.WindowsAndMessaging;
 using Windows.ApplicationModel.Activation;
 using Windows.Storage;
 
@@ -21,11 +22,6 @@ namespace Files.App
 	/// </remarks>
 	internal sealed class Program
 	{
-		// These strings are intentionally hardcoded and cannot be moved to resource files.
-		// The Windows App Runtime (which powers the resource loading system) may itself be unavailable at this point
-		private const string MissingRuntimeMessage = "Files failed to start. A required Windows component could not be loaded. Try reinstalling Files from the Microsoft Store.";
-		private const string MissingRuntimeTitle = "Files - Startup Error";
-
 		public static Semaphore? Pool { get; set; }
 
 		static Program()
@@ -115,13 +111,13 @@ namespace Files.App
 			}
 			catch (COMException ex) when (ex.HResult == unchecked((int)0x80040154))
 			{
-				_ = Win32PInvoke.MessageBoxW(
-					IntPtr.Zero,
-					MissingRuntimeMessage,
-					MissingRuntimeTitle,
-					Win32PInvoke.MB_ICONERROR);
+				Windows.Win32.PInvoke.MessageBox(
+					default,
+					Constants.Startup.MissingRuntimeMessage,
+					Constants.Startup.MissingRuntimeTitle,
+					MESSAGEBOX_STYLE.MB_ICONERROR);
 
-				throw new InvalidOperationException(MissingRuntimeMessage, ex);
+				throw new InvalidOperationException(Constants.Startup.MissingRuntimeMessage, ex);
 			}
 
 			var commandLineArgs = GetCommandLineArgs(activatedArgs);
